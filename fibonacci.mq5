@@ -67,16 +67,17 @@ int OnInit() {
    obj_Trade.SetExpertMagicNumber(MagicNumber);                   //--- Set magic number for trade object
    // Force initial calculation for daily approach
    barsTotal = 0;                                                 //--- Ensure first tick updates
-   // Parse fibLevelsStr into fibLevels array (from MQL5 docs: StringSplit)
+   // Parse `fibLevelsStr` into `fibLevels` array (comma-separated)
    string tempLevels[];                                           //--- Temporary levels array
-   ushort commaSep = StringGetCharacter(",", 0);                  //--- Get comma separator
-   int numLevels = StringSplit(fibLevelsStr, commaSep, tempLevels); //--- Split string into levels
+   int numLevels = StringSplit(fibLevelsStr, ',', tempLevels);    //--- Split string into levels using comma
    ArrayResize(fibLevels, numLevels);                             //--- Resize fibLevels array
    for (int i = 0; i < numLevels; i++) {                          //--- Iterate through levels
       fibLevels[i] = StringToDouble(tempLevels[i]);               //--- Convert to double
    }
    ArrayResize(storedEntryLvls, numLevels);                       //--- Resize storedEntryLvls
    ArrayResize(storedTradesCount, numLevels);                     //--- Resize storedTradesCount
+   ArrayInitialize(storedEntryLvls, 0.0);                         //--- Initialize entry levels to 0.0
+   ArrayInitialize(storedTradesCount, 0);                         //--- Initialize trade counts to 0
    // Clean up old labels
    ObjectsDeleteAll(0, "InfoLabel_", -1, OBJ_LABEL);              //--- Delete all info labels
    lastShownInfo = "";                                            //--- Reset last shown info
@@ -192,7 +193,7 @@ void OnTick() {
    if (UseDailyApproach) {                                        //--- Check daily approach
       // Daily approach logic
       int bars = iBars(_Symbol, PERIOD_D1);                       //--- Get daily bars
-      if (barsTotal != bars && TimeCurrent() > StringToTime("00:05")) { //--- Check new bar
+      if (barsTotal != bars) { //--- Check new bar
          barsTotal = bars;                                        //--- Update bars total
          
          if (CloseOnNewFib == CloseOnNew_Yes) {                   //--- Check close on new
