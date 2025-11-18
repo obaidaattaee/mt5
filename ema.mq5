@@ -24,7 +24,9 @@ enum TPLevel {                                                    // Define TP l
 //+------------------------------------------------------------------+
 //| Input Parameters                                                 |
 //+------------------------------------------------------------------+
-input TradeMode        trade_mode      = Visual_Only;             // Trading Mode
+input TradeMode        trade_mode      = Open_Trades;             // Trading Mode
+input int              MagicNumber     = 12345;                   // Magic number for real trades
+input double           LotSize         = 0.1;                      // Default lot size for orders
 input int              fast_ma_period  = 10;                      // Fast MA Period
 input int              slow_ma_period  = 20;                      // Slow MA Period
 input int              filter_ma_period = 200;                    // Filter MA Period
@@ -33,10 +35,11 @@ input ENUM_APPLIED_PRICE ma_price      = PRICE_CLOSE;             // MA Applied 
 input int              tp1_points      = 50;                      // TP1 Points
 input int              tp2_points      = 100;                     // TP2 Points
 input int              tp3_points      = 150;                     // TP3 Points
-input TPLevel          tp_level        = Level_1;                 // Select TP Level
+input TPLevel          tp_level        = Level_2;                 // Select TP Level
 input int              sl_points       = 150;                     // SL Points
 input int              dash_x          = 30;                      // Dashboard X Offset
 input int              dash_y          = 30;                      // Dashboard Y Offset
+input double           RiskPercent     = 0.0;                      // Risk sizing: percent of balance to allow for margin (0 = disabled)
 
 //+------------------------------------------------------------------+
 //| Global Variables                                                 |
@@ -66,6 +69,60 @@ string dash_prefix = "ProDashboard_";                             //--- Dashboar
 datetime last_bar_time = 0;                                       //--- Last processed bar time
 // Position ticket for Open_Trades mode
 ulong position_ticket = -1;                                       //--- Position ticket
+
+//----------------------------------------------------------------------
+// Helper: compute allowed volume considering symbol limits, free margin
+// and optional RiskPercent (uses OrderCalcMargin to estimate margin per lot)
+//----------------------------------------------------------------------
+double GetAllowedVolume(double desiredVol,int orderType,double price)
+{
+   double min_vol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double max_vol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double vol_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(vol_step <= 0) vol_step = 0.01; // fallback
+
+   double vol = desiredVol;
+   if(min_vol>0 && vol < min_vol) vol = min_vol;
+   if(max_vol>0 && vol > max_vol) vol = max_vol;
+
+   // If RiskPercent specified, limit by margin exposure per lot
+   double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double margin_per_lot=0.0;
+   // estimate margin for 1.0 lot
+   if(!OrderCalcMargin((ENUM_ORDER_TYPE)orderType,_Symbol,1.0,price,margin_per_lot)) margin_per_lot = 0.0;
+
+   if(RiskPercent>0.0 && margin_per_lot>0.0) {
+      double allowed_margin_by_risk = (balance * (RiskPercent/100.0));
+      double max_lots_by_risk = MathFloor(allowed_margin_by_risk / margin_per_lot);
+      if(max_lots_by_risk < 1.0) {
+         // if less than 1 lot allowed, compute fractional allowed lots
+         max_lots_by_risk = allowed_margin_by_risk / margin_per_lot;
+      }
+      if(vol > max_lots_by_risk) vol = max_lots_by_risk;
+   }
+
+   // Ensure volume fits free margin: decrease to fit if necessary
+   if(margin_per_lot>0.0 && free_margin>0.0) {
+      double max_lots_by_free = free_margin / margin_per_lot;
+      if(vol > max_lots_by_free) vol = max_lots_by_free;
+   }
+
+   // Ensure within min/max and align to step
+   if(min_vol>0 && vol < min_vol) {
+      // can't fulfill minimum
+      return(0.0);
+   }
+   if(max_vol>0 && vol > max_vol) vol = max_vol;
+   // round down to nearest step
+   if(vol_step>0) {
+      int steps = (int)MathFloor(vol/vol_step);
+      vol = steps * vol_step;
+   }
+   // final clamp
+   if(vol < min_vol) return(0.0);
+   return(NormalizeDouble(vol, 2));
+}
 
 //+------------------------------------------------------------------+
 //| Function to create rectangle label                               |
@@ -241,22 +298,48 @@ void OnTick() {
             MqlTradeResult result = {};                            //--- Result
             request.action = TRADE_ACTION_DEAL;                    //--- Set action
             request.symbol = _Symbol;                              //--- Set symbol
-            request.volume = 0.1;                                  //--- Set volume
             request.type = signal_type == 1 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL; //--- Set type
             request.price = signal_type == 1 ? ask : bid;          //--- Set price
+                  // Determine allowed volume using margin/risk helper (now that type/price are set)
+                  double req_vol = GetAllowedVolume(LotSize, (int)request.type, request.price);
+                  if(req_vol <= 0.0) {
+                     PrintFormat("Cannot open order: volume after margin/risk check = %f", req_vol);
+                     req_vol = 0.0;
+                  }
+                  request.volume = req_vol;                                  //--- Set volume
             request.deviation = 3;                                 //--- Set deviation
+                  request.type_filling = ORDER_FILLING_FOK;              //--- Filling type
+                  request.type_time = ORDER_TIME_GTC;                   //--- Time type
+                  request.magic = MagicNumber;                          //--- Magic
+                  request.comment = "EMA Strategy";
             double selected_tp = 0;                                //--- Init TP
             switch(tp_level) {                                     //--- Select TP
                case Level_1: selected_tp = current_signal.tp1; break; //--- TP1
                case Level_2: selected_tp = current_signal.tp2; break; //--- TP2
                case Level_3: selected_tp = current_signal.tp3; break; //--- TP3
             }
-            request.tp = selected_tp;                              //--- Set TP
-            request.sl = current_signal.sl;                        //--- Set SL
-            if(!OrderSend(request, result)) {                      //--- Send order
-               Print("Failed to open trade: ", GetLastError());    //--- Log error
-            } else {                                               //--- Success
-               position_ticket = result.deal;                      //--- Set ticket
+            request.tp = NormalizeDouble(selected_tp, _Digits);   //--- Set TP
+            request.sl = NormalizeDouble(current_signal.sl, _Digits); //--- Set SL
+            // Send order and log detailed result for diagnostics
+            bool send_ok = OrderSend(request, result);
+            if (!send_ok) {
+               PrintFormat("OrderSend failed. Retcode=%d, comment='%s', lastError=%d", result.retcode, result.comment, GetLastError());
+            } else {
+               PrintFormat("OrderSend OK. retcode=%d, order=%I64u, deal=%I64u, comment='%s'", result.retcode, result.order, result.deal, result.comment);
+               // Try to find the opened position by symbol+magic and store its ticket
+               for (int pi = PositionsTotal() - 1; pi >= 0; pi--) {
+                  ulong pos_ticket = PositionGetTicket(pi);
+                  if (pos_ticket == 0) continue;
+                  if (PositionSelectByTicket(pos_ticket)) {
+                     long pos_magic = (long)PositionGetInteger(POSITION_MAGIC);
+                     string pos_symbol = PositionGetString(POSITION_SYMBOL);
+                     if (pos_magic == MagicNumber && pos_symbol == _Symbol) {
+                        position_ticket = pos_ticket;
+                        PrintFormat("Captured position ticket: %I64u", position_ticket);
+                        break;
+                     }
+                  }
+               }
             }
          }
       }
@@ -375,13 +458,21 @@ void CloseVirtualPosition(double close_price, bool is_early) {
          MqlTradeResult close_result = {};                        //--- Close result
          close_request.action = TRADE_ACTION_DEAL;                //--- Set action
          close_request.symbol = _Symbol;                          //--- Set symbol
-         close_request.volume = 0.1;                              //--- Set volume
+         // Set close type/price first, then determine allowed volume using helper
          close_request.type = (current_signal.pos_type == 1) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY; //--- Set type
          close_request.price = close_price;                       //--- Set price
+         double close_vol = GetAllowedVolume(LotSize, (int)close_request.type, close_request.price);
+         if(close_vol <= 0.0) {
+            PrintFormat("Cannot close order: volume after margin/risk check = %f", close_vol);
+            close_vol = LotSize; // attempt default
+         }
+         close_request.volume = close_vol;                              //--- Set volume
          close_request.deviation = 3;                             //--- Set deviation
          close_request.position = position_ticket;                 //--- Set position
          if (!OrderSend(close_request, close_result)) {           //--- Send close
-            Print("Failed to close trade: ", GetLastError());     //--- Log error
+            PrintFormat("Order close failed. retcode=%d, comment='%s', lastError=%d", close_result.retcode, close_result.comment, GetLastError());
+         } else {
+            PrintFormat("Order close OK. retcode=%d, order=%I64u, deal=%I64u, comment='%s'", close_result.retcode, close_result.order, close_result.deal, close_result.comment);
          }
          position_ticket = -1;                                    //--- Reset ticket
       }
