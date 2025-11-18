@@ -1,375 +1,276 @@
 //+------------------------------------------------------------------+
-//|                                 Fibonacci Retracement Ratios.mq5 |
-//|                           Copyright 2025, Allan Munene Mutiiria. |
-//|                                   https://t.me/Forex_Algo_Trader |
+//|              1. PROFITUNITY (TRADING CHAOS BY BILL WILLIAMS).mq5 |
+//|      Copyright 2024, ALLAN MUNENE MUTIIRIA. #@Forex Algo-Trader. |
+//|                                     https://forexalgo-trader.com |
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2025, Allan Munene Mutiiria."
-#property link      "https://t.me/Forex_Algo_Trader"
+#property copyright "Copyright 2024, ALLAN MUNENE MUTIIRIA. #@Forex Algo-Trader"
+#property link      "https://forexalgo-trader.com"
+#property description "1. PROFITUNITY (TRADING CHAOS BY BILL WILLIAMS)"
 #property version   "1.00"
-#property strict
 
-#include <Trade\Trade.mqh>                                        // For trade execution
+#include <Trade/Trade.mqh>
+CTrade obj_Trade;
 
-//+------------------------------------------------------------------+
-//| Enums                                                            |
-//+------------------------------------------------------------------+
-enum CloseOnNewEnum {                                             // Define enum for closing on new Fibonacci
-   CloseOnNew_No  = 0,                                            // No
-   CloseOnNew_Yes = 1                                             // Yes
-};
-enum TrailingTypeEnum {                                           // Define enum for trailing stop types
-   Trailing_None   = 0,                                           // None
-   Trailing_Points = 2                                            // By Points
-};
+int handle_Fractals = INVALID_HANDLE; //--- Initialize fractals indicator handle with an invalid handle value
+int handle_Alligator = INVALID_HANDLE; //--- Initialize alligator indicator handle with an invalid handle value
+int handle_AO = INVALID_HANDLE; //--- Initialize Awesome Oscillator (AO) handle with an invalid handle value
+int handle_AC = INVALID_HANDLE; //--- Initialize Accelerator Oscillator (AC) handle with an invalid handle value
 
-//+------------------------------------------------------------------+
-//| Input Parameters                                                 |
-//+------------------------------------------------------------------+
-input bool   UseDailyApproach     = true;                         // Use daily candle (true) or array (false)
-input string fibLevelsStr         = "50,61.8";                    // Comma-separated Fib levels for entry (e.g., 50,61.8)
-input int    maxTradesPerLevel    = 1;                            // Max trades per level per Fib period (0=unlimited)
-input CloseOnNewEnum CloseOnNewFib = CloseOnNew_No;               // Close trades on new Fib calc
-input TrailingTypeEnum TrailingType = Trailing_None;              // Trailing Stop Type
-input double Trailing_Stop_Pips   = 30.0;                         // Trailing Stop in Pips (for Points type)
-input double Min_Profit_To_Trail_Pips = 50.0;                     // Min Profit to Start Trailing in Pips
-input int    LookbackSize         = 100;                          // Number of candles for array approach
-input double LotSize              = 0.1;                          // Trade lot size
-input int    MagicNumber          = 12345;                        // Magic number for trades
-input bool   IncludeCurrentBar    = false;                        // Include current bar in array calcs for updates
-input double SlBufferPercent      = 0.0;                          // SL buffer percent of range (0=no buffer)
-input double TpBufferPercent      = 0.0;                          // TP buffer percent of range (0=no buffer)
+double fractals_up[]; //--- Array to store values for upward fractals
+double fractals_down[]; //--- Array to store values for downward fractals
 
-//+------------------------------------------------------------------+
-//| Global Variables                                                 |
-//+------------------------------------------------------------------+
-CTrade obj_Trade;                                                 //--- Trade object
-int    barsTotal;                                                 //--- For daily approach
-#define FIB_OBJ "Fibonacci Retracement"                           //--- Define Fibonacci object name
-// Persistent variables for both approaches
-static double storedEntryLvls[];                                  //--- Array of entry levels
-static int    storedTradesCount[];                                //--- Trades count per level
-static double storedSl = 0.0;                                     //--- Stored stop loss
-static double storedTp = 0.0;                                     //--- Stored take profit
-static string storedInfo = "";                                    //--- Stored information string
-static bool   storedIsBullish = false;                            //--- Stored bullish flag
-static double fibLevels[];                                        //--- Parsed Fibonacci levels (original order)
-static string lastShownInfo = "";                                 //--- To detect changes and avoid unnecessary updates
-// For array approach
-static bool   fibCalculated = false;                              //--- Fibonacci calculated flag
-static double currentHigh = 0.0;                                  //--- Current high
-static double currentLow = 0.0;                                   //--- Current low
-static string fibName = "Fib_Array";                              //--- Fibonacci name for array
+double alligator_jaws[]; //--- Array to store values for Alligator's Jaw line
+double alligator_teeth[]; //--- Array to store values for Alligator's Teeth line
+double alligator_lips[]; //--- Array to store values for Alligator's Lips line
+
+double ao_values[]; //--- Array to store values of the Awesome Oscillator (AO)
+
+double ac_color[]; //--- Array to store color status of the Accelerator Oscillator (AC)
+#define AC_COLOR_UP 0 //--- Define constant for upward AC color state
+#define AC_COLOR_DOWN 1 //--- Define constant for downward AC color state
+
+double lastFractal_value = 0.0; //--- Variable to store the value of the last detected fractal
+enum fractal_direction {FRACTAL_UP, FRACTAL_DOWN, FRACTAL_NEUTRAL}; //--- Enum for fractal direction states
+fractal_direction lastFractal_direction = FRACTAL_NEUTRAL; //--- Variable to store the direction of the last fractal
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
-int OnInit() {
-   obj_Trade.SetExpertMagicNumber(MagicNumber);                   //--- Set magic number for trade object
-   // Force initial calculation for daily approach
-   barsTotal = 0;                                                 //--- Ensure first tick updates
-   // Parse `fibLevelsStr` into `fibLevels` array (comma-separated)
-   string tempLevels[];                                           //--- Temporary levels array
-   int numLevels = StringSplit(fibLevelsStr, ',', tempLevels);    //--- Split string into levels using comma
-   ArrayResize(fibLevels, numLevels);                             //--- Resize fibLevels array
-   for (int i = 0; i < numLevels; i++) {                          //--- Iterate through levels
-      fibLevels[i] = StringToDouble(tempLevels[i]);               //--- Convert to double
+int OnInit(){
+   //---
+   
+   handle_Fractals = iFractals(_Symbol,_Period); //--- Initialize the fractals indicator handle
+   if (handle_Fractals == INVALID_HANDLE){ //--- Check if the fractals indicator failed to initialize
+      Print("ERROR: UNABLE TO INITIALIZE THE FRACTALS INDICATOR. REVERTING NOW!"); //--- Print error if fractals initialization failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
    }
-   ArrayResize(storedEntryLvls, numLevels);                       //--- Resize storedEntryLvls
-   ArrayResize(storedTradesCount, numLevels);                     //--- Resize storedTradesCount
-   ArrayInitialize(storedEntryLvls, 0.0);                         //--- Initialize entry levels to 0.0
-   ArrayInitialize(storedTradesCount, 0);                         //--- Initialize trade counts to 0
-   // Clean up old labels
-   ObjectsDeleteAll(0, "InfoLabel_", -1, OBJ_LABEL);              //--- Delete all info labels
-   lastShownInfo = "";                                            //--- Reset last shown info
-   // Clean up old Fib object for array
-   ObjectDelete(0, fibName);                                      //--- Delete Fibonacci object
-   fibCalculated = false;                                         //--- Reset calculated flag
-   return(INIT_SUCCEEDED);                                        //--- Return success
+   handle_Alligator = iAlligator(_Symbol,_Period,13,8,8,5,5,3,MODE_SMMA,PRICE_MEDIAN); //--- Initialize the alligator indicator with specific settings
+   if (handle_Alligator == INVALID_HANDLE){ //--- Check if the alligator indicator failed to initialize
+      Print("ERROR: UNABLE TO INITIALIZE THE ALLIGATOR INDICATOR. REVERTING NOW!"); //--- Print error if alligator initialization failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   handle_AO = iAO(_Symbol,_Period); //--- Initialize the Awesome Oscillator (AO) indicator handle
+   if (handle_AO == INVALID_HANDLE){ //--- Check if AO indicator failed to initialize
+      Print("ERROR: UNABLE TO INITIALIZE THE AO INDICATOR. REVERTING NOW!"); //--- Print error if AO initialization failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   handle_AC = iAC(_Symbol,_Period); //--- Initialize the Accelerator Oscillator (AC) indicator handle
+   if (handle_AC == INVALID_HANDLE){ //--- Check if AC indicator failed to initialize
+      Print("ERROR: UNABLE TO INITIALIZE THE AC INDICATOR. REVERTING NOW!"); //--- Print error if AC initialization failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   
+   if (!ChartIndicatorAdd(0,0,handle_Fractals)){ //--- Add the fractals indicator to the main chart window and check for success
+      Print("ERROR: UNABLE TO ADD THE FRACTALS INDICATOR TO CHART. REVERTING NOW!"); //--- Print error if fractals addition failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   if (!ChartIndicatorAdd(0,0,handle_Alligator)){ //--- Add the alligator indicator to the main chart window and check for success
+      Print("ERROR: UNABLE TO ADD THE ALLIGATOR INDICATOR TO CHART. REVERTING NOW!"); //--- Print error if alligator addition failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   if (!ChartIndicatorAdd(0,1,handle_AO)){ //--- Add the AO indicator to a separate subwindow and check for success
+      Print("ERROR: UNABLE TO ADD THE AO INDICATOR TO CHART. REVERTING NOW!"); //--- Print error if AO addition failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   if (!ChartIndicatorAdd(0,2,handle_AC)){ //--- Add the AC indicator to a separate subwindow and check for success
+      Print("ERROR: UNABLE TO ADD THE AC INDICATOR TO CHART. REVERTING NOW!"); //--- Print error if AC addition failed
+      return (INIT_FAILED); //--- Exit initialization with failed status
+   }
+   
+   Print("HANDLE ID FRACTALS = ",handle_Fractals); //--- Print the handle ID for fractals
+   Print("HANDLE ID ALLIGATOR = ",handle_Alligator); //--- Print the handle ID for alligator
+   Print("HANDLE ID AO = ",handle_AO); //--- Print the handle ID for AO
+   Print("HANDLE ID AC = ",handle_AC); //--- Print the handle ID for AC
+
+   ArraySetAsSeries(fractals_up,true); //--- Set the fractals_up array as a time series
+   ArraySetAsSeries(fractals_down,true); //--- Set the fractals_down array as a time series
+   
+   ArraySetAsSeries(alligator_jaws,true); //--- Set the alligator_jaws array as a time series
+   ArraySetAsSeries(alligator_teeth,true); //--- Set the alligator_teeth array as a time series
+   ArraySetAsSeries(alligator_lips,true); //--- Set the alligator_lips array as a time series
+   
+   ArraySetAsSeries(ao_values,true); //--- Set the ao_values array as a time series
+   
+   ArraySetAsSeries(ac_color,true); //--- Set the ac_color array as a time series
+   
+   //---
+   return(INIT_SUCCEEDED); //--- Return successful initialization status
 }
 
 //+------------------------------------------------------------------+
 //| Expert deinitialization function                                 |
 //+------------------------------------------------------------------+
-void OnDeinit(const int reason) {
-   ObjectsDeleteAll(0, "InfoLabel_", -1, OBJ_LABEL);              //--- Delete all info labels
-   ObjectDelete(0, FIB_OBJ);                                      //--- Delete daily Fibonacci
-   ObjectDelete(0, fibName);                                      //--- Delete array Fibonacci
+void OnDeinit(const int reason){
+//---
+   
 }
-
-//+------------------------------------------------------------------+
-//| Display info using labels without flicker                        |
-//+------------------------------------------------------------------+
-void ShowLabels(string info) {
-   if (info == lastShownInfo) return;                             //--- Skip if no change
-   lastShownInfo = info;                                          //--- Update last info
-   // Split info into lines
-   string lines[];                                                //--- Lines array
-   ushort nlSep = StringGetCharacter("\n", 0);                    //--- Get newline sep
-   int numLines = StringSplit(info, nlSep, lines);                //--- Split into lines
-   int y = 10;                                                    //--- Starting Y
-   for (int i = 0; i < numLines; i++) {                           //--- Iterate lines
-      string name = "InfoLabel_" + IntegerToString(i);            //--- Label name
-      if (ObjectFind(0, name) < 0) {                              //--- Check exists
-         ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);               //--- Create label
-         ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER); //--- Set corner
-         ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 10);        //--- Set X distance
-         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);          //--- Set font size
-      }
-      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);            //--- Set Y distance
-      ObjectSetString(0, name, OBJPROP_TEXT, lines[i]);           //--- Set text
-      y += 15;                                                    //--- Increment Y
-   }
-   // Delete extra labels if numLines decreased
-   for (int i = numLines; ; i++) {                                //--- Iterate extras
-      string name = "InfoLabel_" + IntegerToString(i);            //--- Label name
-      if (ObjectFind(0, name) < 0) break;                         //--- Break if none
-      ObjectDelete(0, name);                                      //--- Delete label
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Check if price breaches the current Fib extremes                 |
-//+------------------------------------------------------------------+
-bool IsBreach() {
-   if (!fibCalculated) return false;                              //--- Return false if not calculated
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);            //--- Get bid price
-   if (storedIsBullish) {                                         //--- Check bullish
-      // For bullish, 0% is high, 100% is low
-      return (bid > currentHigh || bid < currentLow);             //--- Check breach
-   } else {                                                       //--- Handle bearish
-      // For bearish, 0% is low, 100% is high
-      return (bid > currentLow || bid < currentHigh);             //--- Check breach
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Close all positions with matching magic and symbol               |
-//+------------------------------------------------------------------+
-void CloseAllPositions() {
-   for (int i = PositionsTotal() - 1; i >= 0; i--) {              //--- Iterate positions reverse
-      if (PositionGetTicket(i) > 0 && PositionGetInteger(POSITION_MAGIC) == MagicNumber && PositionGetString(POSITION_SYMBOL) == _Symbol) { //--- Check position
-         obj_Trade.PositionClose(PositionGetTicket(i));           //--- Close position
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Apply Points Trailing Stop (from reference)                      |
-//+------------------------------------------------------------------+
-void ApplyPointsTrailing() {
-   double point = _Point;                                         //--- Get point value
-   for (int i = PositionsTotal() - 1; i >= 0; i--) {              //--- Iterate positions reverse
-      if (PositionGetTicket(i) > 0) {                             //--- Check valid ticket
-         if (PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == MagicNumber) { //--- Check symbol and magic
-            double sl = PositionGetDouble(POSITION_SL);           //--- Get SL
-            double tp = PositionGetDouble(POSITION_TP);           //--- Get TP
-            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN); //--- Get open price
-            ulong ticket = PositionGetInteger(POSITION_TICKET);   //--- Get ticket
-            if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) { //--- Check buy
-               double newSL = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_BID) - Trailing_Stop_Pips * point, _Digits); //--- Calc new SL
-               if (newSL > sl && SymbolInfoDouble(_Symbol, SYMBOL_BID) - openPrice > Min_Profit_To_Trail_Pips * point) { //--- Check conditions
-                  obj_Trade.PositionModify(ticket, newSL, tp);    //--- Modify position
-               }
-            } else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) { //--- Check sell
-               double newSL = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_ASK) + Trailing_Stop_Pips * point, _Digits); //--- Calc new SL
-               if (newSL < sl && openPrice - SymbolInfoDouble(_Symbol, SYMBOL_ASK) > Min_Profit_To_Trail_Pips * point) { //--- Check conditions
-                  obj_Trade.PositionModify(ticket, newSL, tp);    //--- Modify position
-               }
-            }
-         }
-      }
-   }
-}
-
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
-void OnTick() {
-   // Points trailing can run anytime
-   if (TrailingType == Trailing_Points && PositionsTotal() > 0) { //--- Check trailing
-      ApplyPointsTrailing();                                      //--- Apply trailing
+void OnTick(){
+//---
+
+   if (CopyBuffer(handle_Fractals,0,2,3,fractals_up) < 3){ //--- Copy upward fractals data; check if copying is successful
+      Print("ERROR: UNABLE TO COPY THE FRACTALS UP DATA. REVERTING!"); //--- Print error message if failed
+      return;
    }
-   
-   if (UseDailyApproach) {                                        //--- Check daily approach
-      // Daily approach logic
-      int bars = iBars(_Symbol, PERIOD_D1);                       //--- Get daily bars
-      if (barsTotal != bars) { //--- Check new bar
-         barsTotal = bars;                                        //--- Update bars total
-         
-         if (CloseOnNewFib == CloseOnNew_Yes) {                   //--- Check close on new
-            CloseAllPositions();                                  //--- Close positions
-         }
-         
-         ObjectDelete(0, FIB_OBJ);                                //--- Delete Fib object
-         double openPrice = iOpen(_Symbol, PERIOD_D1, 1);         //--- Get open price
-         double closePrice = iClose(_Symbol, PERIOD_D1, 1);       //--- Get close price
-         double high = iHigh(_Symbol, PERIOD_D1, 1);              //--- Get high
-         double low = iLow(_Symbol, PERIOD_D1, 1);                //--- Get low
-         datetime startingTime = iTime(_Symbol, PERIOD_D1, 1);    //--- Get start time
-         datetime endingTime = iTime(_Symbol, PERIOD_D1, 0) - 1;  //--- Get end time
-         double range = high - low;                               //--- Calc range
-         storedIsBullish = (closePrice > openPrice);              //--- Set bullish flag
-         string levelsList = "";                                  //--- Init levels list
-         for (int i = 0; i < ArraySize(fibLevels); i++) {         //--- Iterate levels
-            storedTradesCount[i] = 0;                             //--- Reset count
-            if (storedIsBullish) {                                //--- Check bullish
-               storedEntryLvls[i] = NormalizeDouble(high - range * fibLevels[i] / 100, _Digits); //--- Calc entry
-            } else {                                              //--- Handle bearish
-               storedEntryLvls[i] = NormalizeDouble(low + range * fibLevels[i] / 100, _Digits); //--- Calc entry
+   if (CopyBuffer(handle_Fractals,1,2,3,fractals_down) < 3){ //--- Copy downward fractals data; check if copying is successful
+      Print("ERROR: UNABLE TO COPY THE FRACTALS DOWN DATA. REVERTING!"); //--- Print error message if failed
+      return;
+   }
+
+   if (CopyBuffer(handle_Alligator,0,0,3,alligator_jaws) < 3){ //--- Copy Alligator's Jaw data
+      Print("ERROR: UNABLE TO COPY THE ALLIGATOR JAWS DATA. REVERTING!");
+      return;
+   }
+   if (CopyBuffer(handle_Alligator,1,0,3,alligator_teeth) < 3){ //--- Copy Alligator's Teeth data
+      Print("ERROR: UNABLE TO COPY THE ALLIGATOR TEETH DATA. REVERTING!");
+      return;
+   }
+   if (CopyBuffer(handle_Alligator,2,0,3,alligator_lips) < 3){ //--- Copy Alligator's Lips data
+      Print("ERROR: UNABLE TO COPY THE ALLIGATOR LIPS DATA. REVERTING!");
+      return;
+   }
+
+   if (CopyBuffer(handle_AO,0,0,3,ao_values) < 3){ //--- Copy AO data
+      Print("ERROR: UNABLE TO COPY THE AO DATA. REVERTING!");
+      return;
+   }
+
+   if (CopyBuffer(handle_AC,1,0,3,ac_color) < 3){ //--- Copy AC color data
+      Print("ERROR: UNABLE TO COPY THE AC COLOR DATA. REVERTING!");
+      return;
+   }
+
+   if (isNewBar()){ //--- Check if a new bar has formed
+      const int index_fractal = 0;
+      if (fractals_up[index_fractal] != EMPTY_VALUE){ //--- Detect upward fractal presence
+         lastFractal_value = fractals_up[index_fractal]; //--- Store fractal value
+         lastFractal_direction = FRACTAL_UP; //--- Set last fractal direction as up
+      }
+      if (fractals_down[index_fractal] != EMPTY_VALUE){ //--- Detect downward fractal presence
+         lastFractal_value = fractals_down[index_fractal];
+         lastFractal_direction = FRACTAL_DOWN;
+      }
+
+      if (lastFractal_value != 0.0 && lastFractal_direction != FRACTAL_NEUTRAL){ //--- Ensure fractal is valid
+         Print("FRACTAL VALUE = ",lastFractal_value);
+         Print("FRACTAL DIRECTION = ",getLastFractalDirection());
+      }
+
+      
+      Print("ALLIGATOR JAWS = ",NormalizeDouble(alligator_jaws[1],_Digits));
+      Print("ALLIGATOR TEETH = ",NormalizeDouble(alligator_teeth[1],_Digits));
+      Print("ALLIGATOR LIPS = ",NormalizeDouble(alligator_lips[1],_Digits));
+      
+      Print("AO VALUE = ",NormalizeDouble(ao_values[1],_Digits+1));
+      
+      if (ac_color[1] == AC_COLOR_UP){
+         Print("AC COLOR UP GREEN = ",AC_COLOR_UP);
+      }
+      else if (ac_color[1] == AC_COLOR_DOWN){
+         Print("AC COLOR DOWN RED = ",AC_COLOR_DOWN);
+      }
+      
+
+      bool isBreakdown_jaws_buy = alligator_jaws[1] < getClosePrice(1) //--- Check if breakdown for buy
+                                  && alligator_jaws[2] > getClosePrice(2);
+      bool isBreakdown_jaws_sell = alligator_jaws[1] > getClosePrice(1) //--- Check if breakdown for sell
+                                  && alligator_jaws[2] < getClosePrice(2);
+
+      if (lastFractal_direction == FRACTAL_DOWN //--- Conditions for Buy signal
+         && isBreakdown_jaws_buy
+         && ac_color[1] == AC_COLOR_UP
+         && (ao_values[1] > 0 && ao_values[2] < 0)){
+         Print("BUY SIGNAL GENERATED");
+         obj_Trade.Buy(0.01,_Symbol,getAsk()); //--- Execute Buy order
+      }
+      else if (lastFractal_direction == FRACTAL_UP //--- Conditions for Sell signal
+         && isBreakdown_jaws_sell
+         && ac_color[1] == AC_COLOR_DOWN
+         && (ao_values[1] < 0 && ao_values[2] > 0)){
+         Print("SELL SIGNAL GENERATED");
+         obj_Trade.Sell(0.01,_Symbol,getBid()); //--- Execute Sell order
+      }
+
+      if (ao_values[1] < 0 && ao_values[2] > 0){ //--- Condition to close all Buy positions
+         if (PositionsTotal() > 0){
+            Print("CLOSE ALL BUY POSITIONS");
+            for (int i=0; i<PositionsTotal(); i++){
+               ulong pos_ticket = PositionGetTicket(i); //--- Get position ticket
+               if (pos_ticket > 0 && PositionSelectByTicket(pos_ticket)){ //--- Check if ticket is valid
+                  ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+                  if (pos_type == POSITION_TYPE_BUY){ //--- Close Buy positions
+                     obj_Trade.PositionClose(pos_ticket);
+                  }
+               }
             }
-            levelsList += DoubleToString(fibLevels[i], 1) + ": " + DoubleToString(storedEntryLvls[i], _Digits) + "\n"; //--- Add to list
-         }
-         if (storedIsBullish) {                                   //--- Check bullish
-            // Bullish: Fibo from low to high for correct 0% at high, 100% at low, green
-            ObjectCreate(0, FIB_OBJ, OBJ_FIBO, 0, startingTime, low, endingTime, high); //--- Create Fib
-            ObjectSetInteger(0, FIB_OBJ, OBJPROP_COLOR, clrGreen); //--- Set color
-            for (int i = 0; i < ObjectGetInteger(0, FIB_OBJ, OBJPROP_LEVELS); i++) { //--- Iterate levels
-               ObjectSetInteger(0, FIB_OBJ, OBJPROP_LEVELCOLOR, i, clrGreen); //--- Set level color
-            }
-            storedSl = NormalizeDouble(low - range * (SlBufferPercent / 100), _Digits); //--- Calc SL
-            storedTp = NormalizeDouble(high + range * (TpBufferPercent / 100), _Digits); //--- Calc TP
-            storedInfo = "Daily Approach - Bullish\n" +           //--- Set info
-                         "Open: " + DoubleToString(openPrice, _Digits) + "\n" +
-                         "Close: " + DoubleToString(closePrice, _Digits) + "\n" +
-                         "Buy Entries:\n" + levelsList +
-                         "SL: " + DoubleToString(storedSl, _Digits) + "\n" +
-                         "TP: " + DoubleToString(storedTp, _Digits);
-            Print("New daily bar: Bullish Fibonacci levels calculated. Entries: ", levelsList); //--- Log
-         } else {                                                 //--- Handle bearish
-            // Bearish: Fibo from high to low for correct 0% at low, 100% at high, red
-            ObjectCreate(0, FIB_OBJ, OBJ_FIBO, 0, startingTime, high, endingTime, low); //--- Create Fib
-            ObjectSetInteger(0, FIB_OBJ, OBJPROP_COLOR, clrRed);  //--- Set color
-            for (int i = 0; i < ObjectGetInteger(0, FIB_OBJ, OBJPROP_LEVELS); i++) { //--- Iterate levels
-               ObjectSetInteger(0, FIB_OBJ, OBJPROP_LEVELCOLOR, i, clrRed); //--- Set level color
-            }
-            storedSl = NormalizeDouble(high + range * (SlBufferPercent / 100), _Digits); //--- Calc SL
-            storedTp = NormalizeDouble(low - range * (TpBufferPercent / 100), _Digits); //--- Calc TP
-            storedInfo = "Daily Approach - Bearish\n" +           //--- Set info
-                         "Open: " + DoubleToString(openPrice, _Digits) + "\n" +
-                         "Close: " + DoubleToString(closePrice, _Digits) + "\n" +
-                         "Sell Entries:\n" + levelsList +
-                         "SL: " + DoubleToString(storedSl, _Digits) + "\n" +
-                         "TP: " + DoubleToString(storedTp, _Digits);
-            Print("New daily bar: Bearish Fibonacci levels calculated. Entries: ", levelsList); //--- Log
          }
       }
-   } else {                                                       //--- Array approach
-      // Array approach: Calculate only when not calculated or breached
-      if (!fibCalculated || IsBreach()) {                         //--- Check recalc
-         if (fibCalculated) {                                     //--- Check calculated
-            if (CloseOnNewFib == CloseOnNew_Yes) {                //--- Check close on new
-               CloseAllPositions();                               //--- Close positions
+      else if (ao_values[1] > 0 && ao_values[2] < 0){ //--- Condition to close all Sell positions
+         if (PositionsTotal() > 0){
+            Print("CLOSE ALL SELL POSITIONS");
+            for (int i=0; i<PositionsTotal(); i++){
+               ulong pos_ticket = PositionGetTicket(i); //--- Get position ticket
+               if (pos_ticket > 0 && PositionSelectByTicket(pos_ticket)){ //--- Check if ticket is valid
+                  ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+                  if (pos_type == POSITION_TYPE_SELL){ //--- Close Sell positions
+                     obj_Trade.PositionClose(pos_ticket);
+                  }
+               }
             }
-            // Invalidate and forget previous
-            ObjectDelete(0, fibName);                             //--- Delete Fib
-            fibCalculated = false;                                //--- Reset flag
-         }
-         int startShift = IncludeCurrentBar ? 0 : 1;              //--- Set start shift
-         int copyCount = IncludeCurrentBar ? LookbackSize : LookbackSize; //--- Set copy count
-         double high[], low[];                                    //--- High and low arrays
-         ArraySetAsSeries(high, true);                            //--- Set as series
-         ArraySetAsSeries(low, true);                             //--- Set as series
-         if (CopyHigh(_Symbol, _Period, startShift, copyCount, high) <= 0) return; //--- Copy high
-         if (CopyLow(_Symbol, _Period, startShift, copyCount, low) <= 0) return; //--- Copy low
-         int highestCandle = ArrayMaximum(high, 0, copyCount);    //--- Get highest
-         int lowestCandle = ArrayMinimum(low, 0, copyCount);      //--- Get lowest
-         MqlRates pArray[];                                       //--- Rates array
-         ArraySetAsSeries(pArray, true);                          //--- Set as series
-         int pData = CopyRates(_Symbol, _Period, startShift, copyCount, pArray); //--- Copy rates
-         if (pData <= 0) return;                                  //--- Check data
-         double highVal = pArray[highestCandle].high;             //--- Get high val
-         double lowVal = pArray[lowestCandle].low;                //--- Get low val
-         double range = highVal - lowVal;                         //--- Calc range
-         int oldestShift = IncludeCurrentBar ? (LookbackSize - 1) : LookbackSize; //--- Oldest shift
-         double openCandle = iOpen(_Symbol, _Period, oldestShift); //--- Get open
-         double closeCandle = iClose(_Symbol, _Period, IncludeCurrentBar ? 0 : 1); //--- Get close
-         storedIsBullish = (closeCandle > openCandle);            //--- Set bullish
-         string levelsList = "";                                  //--- Init list
-         for (int i = 0; i < ArraySize(fibLevels); i++) {         //--- Iterate levels
-            storedTradesCount[i] = 0;                             //--- Reset count
-            if (storedIsBullish) {                                //--- Check bullish
-               storedEntryLvls[i] = NormalizeDouble(highVal - range * fibLevels[i] / 100, _Digits); //--- Calc entry
-            } else {                                              //--- Handle bearish
-               storedEntryLvls[i] = NormalizeDouble(lowVal + range * fibLevels[i] / 100, _Digits); //--- Calc entry
-            }
-            levelsList += DoubleToString(fibLevels[i], 1) + ": " + DoubleToString(storedEntryLvls[i], _Digits) + "\n"; //--- Add to list
-         }
-         if (storedIsBullish) {                                   //--- Check bullish
-            // Bullish: Anchor from low to high
-            datetime time1 = pArray[lowestCandle].time;           //--- Time1
-            double price1 = lowVal;                               //--- Price1
-            datetime time2 = pArray[highestCandle].time;          //--- Time2
-            double price2 = highVal;                              //--- Price2
-            ObjectCreate(0, fibName, OBJ_FIBO, 0, time1, price1, time2, price2); //--- Create Fib
-            ObjectSetInteger(0, fibName, OBJPROP_COLOR, clrGreen); //--- Set color
-            for (int i = 0; i < ObjectGetInteger(0, fibName, OBJPROP_LEVELS); i++) { //--- Iterate levels
-               ObjectSetInteger(0, fibName, OBJPROP_LEVELCOLOR, i, clrGreen); //--- Set level color
-            }
-            storedSl = NormalizeDouble(lowVal - range * (SlBufferPercent / 100), _Digits); //--- Calc SL
-            storedTp = NormalizeDouble(highVal + range * (TpBufferPercent / 100), _Digits); //--- Calc TP
-            storedInfo = "Array Approach - Bullish\n" +           //--- Set info
-                         "Array Open: " + DoubleToString(openCandle, _Digits) + "\n" +
-                         "Array Close: " + DoubleToString(closeCandle, _Digits) + "\n" +
-                         "Buy Entries:\n" + levelsList +
-                         "SL: " + DoubleToString(storedSl, _Digits) + "\n" +
-                         "TP: " + DoubleToString(storedTp, _Digits);
-         } else {                                                 //--- Handle bearish
-            // Bearish: Anchor from high to low
-            datetime time1 = pArray[highestCandle].time;          //--- Time1
-            double price1 = highVal;                              //--- Price1
-            datetime time2 = pArray[lowestCandle].time;           //--- Time2
-            double price2 = lowVal;                               //--- Price2
-            ObjectCreate(0, fibName, OBJ_FIBO, 0, time1, price1, time2, price2); //--- Create Fib
-            ObjectSetInteger(0, fibName, OBJPROP_COLOR, clrRed);  //--- Set color
-            for (int i = 0; i < ObjectGetInteger(0, fibName, OBJPROP_LEVELS); i++) { //--- Iterate levels
-               ObjectSetInteger(0, fibName, OBJPROP_LEVELCOLOR, i, clrRed); //--- Set level color
-            }
-            storedSl = NormalizeDouble(highVal + range * (SlBufferPercent / 100), _Digits); //--- Calc SL
-            storedTp = NormalizeDouble(lowVal - range * (TpBufferPercent / 100), _Digits); //--- Calc TP
-            storedInfo = "Array Approach - Bearish\n" +           //--- Set info
-                         "Array Open: " + DoubleToString(openCandle, _Digits) + "\n" +
-                         "Array Close: " + DoubleToString(closeCandle, _Digits) + "\n" +
-                         "Sell Entries:\n" + levelsList +
-                         "SL: " + DoubleToString(storedSl, _Digits) + "\n" +
-                         "TP: " + DoubleToString(storedTp, _Digits);
-         }
-         currentHigh = storedIsBullish ? highVal : lowVal;        //--- Set current high
-         currentLow = storedIsBullish ? lowVal : highVal;         //--- Set current low
-         fibCalculated = true;                                    //--- Set calculated
-      }
-   }
-   
-   // Display info using labels (but only update if changed)
-   ShowLabels(storedInfo);                                        //--- Show labels
-   
-   // Entry logic: Checked every tick using stored levels (no existing position)
-   if (PositionsTotal() == 0) {                                   //--- Check no positions
-      double close1 = iClose(_Symbol, _Period, 1);                //--- Get close 1
-      double close2 = iClose(_Symbol, _Period, 2);                //--- Get close 2
-      for (int i = 0; i < ArraySize(storedEntryLvls); i++) {      //--- Iterate levels
-         // Only enter on levels 0 < fib <=100 (retracements), ignore 0/100/extensions for entry
-         if (fibLevels[i] <= 0 || fibLevels[i] > 100.0) continue; //--- Skip invalid
-         if ((maxTradesPerLevel == 0 || storedTradesCount[i] < maxTradesPerLevel) && //--- Check count
-             ((storedIsBullish && close1 > storedEntryLvls[i] && close2 <= storedEntryLvls[i]) || //--- Buy cross
-              (!storedIsBullish && close1 < storedEntryLvls[i] && close2 >= storedEntryLvls[i]))) { //--- Sell cross
-            string levelStr = DoubleToString(fibLevels[i], 1);     //--- Level string
-            ulong ticket = 0;                                      //--- Init ticket
-            if (storedIsBullish) {                                 //--- Check buy
-               Print("Buy signal triggered at ", close1, " crossing level ", levelStr, " (", storedEntryLvls[i], ")"); //--- Log
-               obj_Trade.Buy(LotSize, _Symbol, 0, storedSl, storedTp, "Fibo Buy at " + levelStr); //--- Open buy
-               ticket = obj_Trade.ResultDeal();                   //--- Get deal
-            } else {                                               //--- Handle sell
-               Print("Sell signal triggered at ", close1, " crossing level ", levelStr, " (", storedEntryLvls[i], ")"); //--- Log
-               obj_Trade.Sell(LotSize, _Symbol, 0, storedSl, storedTp, "Fibo Sell at " + levelStr); //--- Open sell
-               ticket = obj_Trade.ResultDeal();                   //--- Get deal
-            }
-            storedTradesCount[i]++;                                //--- Increment count
-            break;                                                 //--- Break loop
          }
       }
    }
    
-   // Redraw chart objects
-   ChartRedraw();                                                 //--- Redraw chart
 }
+
 //+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//|   IS NEW BAR FUNCTION                                            |
+//+------------------------------------------------------------------+
+bool isNewBar(){ 
+   static int prevBars = 0; //--- Store previous bar count
+   int currBars = iBars(_Symbol,_Period); //--- Get current bar count for the symbol and period
+   if (prevBars == currBars) return (false); //--- If bars haven't changed, return false
+   prevBars = currBars; //--- Update previous bar count
+   return (true); //--- Return true if new bar is detected
+}
+
+//+------------------------------------------------------------------+
+//|     FUNCTION TO GET FRACTAL DIRECTION                            |
+//+------------------------------------------------------------------+
+
+string getLastFractalDirection(){
+   string direction_fractal = "NEUTRAL"; //--- Default direction set to NEUTRAL
+   
+   if (lastFractal_direction == FRACTAL_UP) return ("UP"); //--- Return UP if last fractal was up
+   else if (lastFractal_direction == FRACTAL_DOWN) return ("DOWN"); //--- Return DOWN if last fractal was down
+   
+   return (direction_fractal); //--- Return NEUTRAL if no specific direction
+}
+
+//+------------------------------------------------------------------+
+//|        FUNCTION TO GET CLOSE PRICES                              |
+//+------------------------------------------------------------------+
+
+double getClosePrice(int bar_index){
+   return (iClose(_Symbol, _Period, bar_index)); //--- Retrieve the close price of the specified bar
+}
+
+//+------------------------------------------------------------------+
+//|        FUNCTION TO GET ASK PRICES                                |
+//+------------------------------------------------------------------+
+
+double getAsk(){
+   return (NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_ASK), _Digits)); //--- Get and normalize the Ask price
+}
+
+//+------------------------------------------------------------------+
+//|        FUNCTION TO GET BID PRICES                                |
+//+------------------------------------------------------------------+
+
+double getBid(){
+   return (NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits)); //--- Get and normalize the Bid price
+}
