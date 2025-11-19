@@ -114,11 +114,25 @@ int OnInit()
    //--- تهيئة معلومات الصفقة
    ResetTradeInfo();
    
+   //--- التحقق من Filling Mode المدعوم
+   ENUM_SYMBOL_TRADE_EXECUTION exec_mode = (ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_EXEMODE);
+   string filling_info = "";
+   
+   if(exec_mode == SYMBOL_TRADE_EXECUTION_EXCHANGE)
+      filling_info = "Exchange Mode (FOK/IOC/Return)";
+   else if(exec_mode == SYMBOL_TRADE_EXECUTION_INSTANT)
+      filling_info = "Instant Mode";
+   else if(exec_mode == SYMBOL_TRADE_EXECUTION_MARKET)
+      filling_info = "Market Mode (FOK/IOC)";
+   else if(exec_mode == SYMBOL_TRADE_EXECUTION_REQUEST)
+      filling_info = "Request Mode";
+   
    //--- طباعة معلومات التهيئة
    Print("════════════════════════════════════════");
    Print("✅ EA تم تهيئته بنجاح");
    Print("════════════════════════════════════════");
    Print("📊 Symbol: ", _Symbol);
+   Print("🔧 Execution Mode: ", filling_info);
    Print("⏱️ Strategy Timeframe: ", EnumToString(Strategy_Timeframe));
    Print("📅 Higher Timeframe: ", EnumToString(Higher_Timeframe));
    Print("📈 EMA Period: ", EMA_Period);
@@ -239,6 +253,65 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
+//| الحصول على Filling Mode المناسب للوسيط                             |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillingMode()
+{
+   // الحصول على Filling Modes المدعومة
+   int filling = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   
+   // التحقق من الأوضاع المدعومة
+   if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   else if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   
+   // الافتراضي: Return
+   return ORDER_FILLING_RETURN;
+}
+
+//+------------------------------------------------------------------+
+//| الحصول على وصف Return Code                                        |
+//+------------------------------------------------------------------+
+string GetRetcodeDescription(uint retcode)
+{
+   switch(retcode)
+   {
+      case TRADE_RETCODE_REQUOTE:           return "Requote";
+      case TRADE_RETCODE_REJECT:            return "Request rejected";
+      case TRADE_RETCODE_CANCEL:            return "Request canceled";
+      case TRADE_RETCODE_PLACED:            return "Order placed";
+      case TRADE_RETCODE_DONE:              return "Request completed";
+      case TRADE_RETCODE_DONE_PARTIAL:      return "Request partially filled";
+      case TRADE_RETCODE_ERROR:             return "Request processing error";
+      case TRADE_RETCODE_TIMEOUT:           return "Request timeout";
+      case TRADE_RETCODE_INVALID:           return "Invalid request";
+      case TRADE_RETCODE_INVALID_VOLUME:    return "Invalid volume";
+      case TRADE_RETCODE_INVALID_PRICE:     return "Invalid price";
+      case TRADE_RETCODE_INVALID_STOPS:     return "Invalid stops";
+      case TRADE_RETCODE_TRADE_DISABLED:    return "Trade disabled";
+      case TRADE_RETCODE_MARKET_CLOSED:     return "Market closed";
+      case TRADE_RETCODE_NO_MONEY:          return "Not enough money";
+      case TRADE_RETCODE_PRICE_CHANGED:     return "Price changed";
+      case TRADE_RETCODE_PRICE_OFF:         return "No quotes";
+      case TRADE_RETCODE_INVALID_EXPIRATION:return "Invalid expiration";
+      case TRADE_RETCODE_ORDER_CHANGED:     return "Order changed";
+      case TRADE_RETCODE_TOO_MANY_REQUESTS: return "Too many requests";
+      case TRADE_RETCODE_NO_CHANGES:        return "No changes";
+      case TRADE_RETCODE_SERVER_DISABLES_AT:return "Autotrading disabled by server";
+      case TRADE_RETCODE_CLIENT_DISABLES_AT:return "Autotrading disabled by client";
+      case TRADE_RETCODE_LOCKED:            return "Request locked";
+      case TRADE_RETCODE_FROZEN:            return "Order/Position frozen";
+      case TRADE_RETCODE_INVALID_FILL:      return "Invalid filling type";
+      case TRADE_RETCODE_CONNECTION:        return "No connection";
+      case TRADE_RETCODE_ONLY_REAL:         return "Only for real accounts";
+      case TRADE_RETCODE_LIMIT_ORDERS:      return "Limit orders reached";
+      case TRADE_RETCODE_LIMIT_VOLUME:      return "Volume limit reached";
+      default:                              return "Unknown error";
+   }
+}
+
+//+------------------------------------------------------------------+
 //| فتح أمر شراء                                                       |
 //+------------------------------------------------------------------+
 void OpenBuyOrder()
@@ -255,6 +328,9 @@ void OpenBuyOrder()
    double sl = NormalizeDouble(ask - Stop_Loss_Pips * point * 10, digits);
    double tp = NormalizeDouble(ask + Take_Profit_Pips * point * 10, digits);
    
+   //--- تحديد Filling Mode المناسب
+   ENUM_ORDER_TYPE_FILLING filling = GetFillingMode();
+   
    request.action = TRADE_ACTION_DEAL;
    request.symbol = _Symbol;
    request.volume = Lot_Size;
@@ -265,10 +341,13 @@ void OpenBuyOrder()
    request.deviation = 10;
    request.magic = Magic_Number;
    request.comment = Trade_Comment + "_BUY";
+   request.type_filling = filling;  // ✅ إضافة Filling Mode
    
    if(!OrderSend(request, result))
    {
       Print("❌ خطأ في فتح صفقة الشراء: ", GetLastError());
+      Print("❌ Return Code: ", result.retcode, " - ", GetRetcodeDescription(result.retcode));
+      Print("❌ Filling Mode Used: ", EnumToString(filling));
    }
    else
    {
@@ -358,6 +437,9 @@ void OpenAdditionalBuy(double volume)
    double sl = NormalizeDouble(ask - Stop_Loss_Pips * point * 10, digits);
    double tp = NormalizeDouble(ask + Take_Profit_Pips * point * 10, digits);
    
+   //--- تحديد Filling Mode المناسب
+   ENUM_ORDER_TYPE_FILLING filling = GetFillingMode();
+   
    request.action = TRADE_ACTION_DEAL;
    request.symbol = _Symbol;
    request.volume = volume;
@@ -368,6 +450,26 @@ void OpenAdditionalBuy(double volume)
    request.deviation = 10;
    request.magic = Magic_Number;
    request.comment = Trade_Comment + "_ADD";
+   request.type_filling = filling;  // ✅ إضافة Filling Mode
+   
+   if(!OrderSend(request, result))
+   {
+      Print("❌ خطأ في فتح صفقة إضافية: ", GetLastError());
+      Print("❌ Return Code: ", result.retcode, " - ", GetRetcodeDescription(result.retcode));
+   }
+   else
+   {
+      Print("✅ صفقة إضافية تم فتحها!");
+      Print("🎫 Ticket: ", result.order);
+      Print("💰 Price: ", result.price);
+      Print("📊 Volume: ", result.volume);
+      
+      //--- تحديث معلومات الصفقة
+      current_trade.buy_count++;
+      current_trade.total_spent += volume;
+      last_buy_time = TimeCurrent();
+   }
+}
    
    if(!OrderSend(request, result))
    {
@@ -448,6 +550,9 @@ void ClosePosition(string reason)
             ZeroMemory(request);
             ZeroMemory(result);
             
+            //--- تحديد Filling Mode المناسب
+            ENUM_ORDER_TYPE_FILLING filling = GetFillingMode();
+            
             request.action = TRADE_ACTION_DEAL;
             request.position = ticket;
             request.symbol = _Symbol;
@@ -457,10 +562,16 @@ void ClosePosition(string reason)
             request.deviation = 10;
             request.magic = Magic_Number;
             request.comment = reason;
+            request.type_filling = filling;  // ✅ إضافة Filling Mode
             
             if(OrderSend(request, result))
             {
                Print("✅ صفقة تم إغلاقها - السبب: ", reason);
+            }
+            else
+            {
+               Print("❌ خطأ في إغلاق الصفقة: ", GetLastError());
+               Print("❌ Return Code: ", result.retcode, " - ", GetRetcodeDescription(result.retcode));
             }
          }
       }
